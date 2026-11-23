@@ -678,7 +678,19 @@ async function pushCard(note) {
       ? '<p>To get notifications, add Kids Calendar to your Home Screen (Share → Add to Home Screen), then open it from there and come back to this page.</p>'
       : '<p class="muted">This browser can\'t show notifications. You still get emails if they\'re on above.</p>';
   } else if (Notification.permission === 'denied') {
-    html = '<p>Notifications are blocked for Kids Calendar. Turn them on in your phone\'s Settings → Notifications, then come back here.</p>';
+    html = /android/i.test(navigator.userAgent)
+      ? `<p>Chrome says notifications are blocked for this calendar. Check these, then tap Try again:</p>
+         <ol class="small" style="padding-left:20px;margin:6px 0 10px">
+           <li>You're not in an <b>Incognito</b> tab (Incognito always blocks them).</li>
+           <li>In Chrome, tap the icon at the left of the address bar → <b>Permissions</b> (or Site settings) → <b>Notifications</b> → <b>Allow</b>. If you see <b>Reset permissions</b>, tap that.</li>
+           <li>If you added it to your Home Screen: phone <b>Settings → Apps → Kids Calendar → Notifications</b> → on.</li>
+         </ol>
+         <button data-act="push-on">Try again</button>`
+      : isIOS
+        ? `<p>Notifications are blocked for Kids Calendar. On the iPhone go to <b>Settings → Notifications → Kids Calendar</b> and turn on <b>Allow Notifications</b>, then come back and tap Try again.</p>
+           <button data-act="push-on">Try again</button>`
+        : `<p>Notifications are blocked for this site in your browser. Allow them in the site settings (the icon left of the address), then tap Try again.</p>
+           <button data-act="push-on">Try again</button>`;
   } else {
     const sub = await currentSubscription().catch(() => null);
     const on = !!(sub && Notification.permission === 'granted');
