@@ -25,7 +25,10 @@ test('date helpers (no time zone shifts, no Intl needed)', () => {
 });
 
 test('setup needs the key, gives two codes, then is closed', () => {
-  assert.deepEqual(post({ action: 'status' }), { setUp: false, needsSetupKey: true });
+  const st = post({ action: 'status' });
+  assert.equal(st.setUp, false);
+  assert.equal(st.needsSetupKey, true);
+  assert.match(st.pushKey, /^[A-Za-z0-9_-]{87}$/);
   const base = { action: 'setup', familyName: 'Test kids', you: { name: 'Alex', email: 'alex@example.com' },
     other: { name: 'Sam', email: 'sam@example.com' }, kids: ['Mia', 'Leo', ' '], appUrl: 'https://x.github.io/kids-calendar/' };
   assert.equal(post({ ...base, setupKey: 'WRONG' }).status, 403);

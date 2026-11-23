@@ -190,6 +190,7 @@ function render() {
   }
   const views = { cal: renderCal, up: renderUpcoming, log: renderLog, set: renderSettings };
   $app.innerHTML = (offline ? '<div class="offline">Offline: showing the last copy</div>' : '') + views[ui.view]();
+  if (ui.view === 'set') pushCard();
 }
 
 function installBanner() {
@@ -329,7 +330,7 @@ function renderSettings() {
         <input id="me-name" name="name" value="${esc(m.name)}" autocomplete="name" required>
         <label for="me-email">Your email</label>
         <input id="me-email" name="email" type="email" value="${esc(m.email || '')}" autocomplete="email" inputmode="email" placeholder="you@example.com">
-        <label class="toggle">Email me when someone else changes something
+        <label class="toggle">Email me when someone else changes something (as well as or instead of phone notifications)
           <input type="checkbox" name="notify" ${m.notify ? 'checked' : ''}></label>
         <div class="spacer"></div>
         <button class="primary block">Save</button>
@@ -337,6 +338,11 @@ function renderSettings() {
       <p class="small muted" style="margin-top:12px">Your code: <span class="code">${esc(m.code)}</span><br>
         Keep it: you need it to sign in on another phone, or in the Home Screen app.</p>
     </div>
+
+    ${S.pushKey ? `<div class="card" id="push-card">
+      <h2>Notifications on this phone</h2>
+      <div id="push-body"><p class="muted small">Checking…</p></div>
+    </div>` : ''}
 
     <div class="card">
       <h2>Usual schedule</h2>
@@ -652,6 +658,86 @@ async function shareCode(name, c) {
   catch { toast(`${name}'s code is ${c}`); }
 }
 
+/* ---------- phone notifications (Web Push) ---------- */
+const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function b64uToBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+}
+async function currentSubscription() {
+  if (!pushSupported) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+async function pushCard(note) {
+  const box = document.getElementById('push-body');
+  if (!box) return;
+  let html;
+  if (!pushSupported) {
+    html = isIOS && !standalone
+      ? '<p>To get notifications, add Kids Calendar to your Home Screen (Share → Add to Home Screen), then open it from there and come back to this page.</p>'
+      : '<p class="muted">This browser can\'t show notifications. You still get emails if they\'re on above.</p>';
+  } else if (Notification.permission === 'denied') {
+    html = '<p>Notifications are blocked for Kids Calendar. Turn them on in your phone\'s Settings → Notifications, then come back here.</p>';
+  } else {
+    const sub = await currentSubscription().catch(() => null);
+    const on = !!(sub && Notification.permission === 'granted');
+    html = on
+      ? `<p>On: this phone gets a notification when someone else changes the calendar.</p>
+         <div class="row wrap"><button data-act="push-test">Send a test notification</button>
+         <button class="ghost" data-act="push-off">Turn off</button></div>`
+      : `<p class="muted">Get a notification on this phone when someone else changes the calendar.</p>
+         <button class="primary block" data-act="push-on">Turn on notifications</button>`;
+  }
+  if (note) html += `<p class="small" style="margin-top:10px">${esc(note)}</p>`;
+  box.innerHTML = html;
+}
+function deviceName() {
+  const ua = navigator.userAgent;
+  return /iphone/i.test(ua) ? 'iPhone' : /ipad/i.test(ua) ? 'iPad' : /android/i.test(ua) ? 'Android phone' : 'Computer';
+}
+function pushOn(btn) {
+  // Ask for permission straight away, inside the tap (iPhones require that).
+  const asking = Notification.requestPermission();
+  btn.disabled = true;
+  (async () => {
+    try {
+      const perm = await asking;
+      if (perm !== 'granted') return pushCard(perm === 'denied' ? '' : 'Notifications not turned on.');
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(S.pushKey) });
+      setState(await api('pushSubscribe', { subscription: sub.toJSON(), device: deviceName() }));
+      pushCard('Done. Tap "Send a test notification" to check.');
+    } catch (e) {
+      pushCard(`Couldn't turn on notifications: ${e.message || e}`);
+    }
+  })();
+}
+async function pushOff() {
+  try {
+    const sub = await currentSubscription();
+    if (sub) {
+      await api('pushUnsubscribe', { endpoint: sub.endpoint }).catch(() => {});
+      await sub.unsubscribe();
+    }
+    pushCard('Notifications turned off on this phone.');
+  } catch (e) { pushCard(`Couldn't turn them off: ${e.message || e}`); }
+}
+async function pushTest(btn) {
+  btn.disabled = true;
+  try {
+    const sub = await currentSubscription();
+    if (!sub) return pushCard('Notifications are not turned on for this phone.');
+    const r = await api('pushTest', { endpoint: sub.endpoint });
+    const t = r.pushTest || {};
+    pushCard(t.ok ? 'Sent. It should appear within a few seconds (lock the phone to see it on the lock screen).'
+      : `Not delivered. The notification service said ${t.status || 'nothing'}${t.reason ? `: ${t.reason}` : ''}`);
+  } catch (e) {
+    pushCard(`Test failed: ${e.message || e}`);
+  }
+}
+
 /* ---------- events (one delegated handler) ---------- */
 document.addEventListener('click', async (e) => {
   const pickBtn = e.target.closest('[data-pick] > button');
@@ -706,6 +792,9 @@ document.addEventListener('click', async (e) => {
     case 'signout':
       if (confirmTwice(a, 'Tap again to sign out')) signOut();
       break;
+    case 'push-on': pushOn(a); break;
+    case 'push-off': pushOff(); break;
+    case 'push-test': pushTest(a); break;
     case 'hide-install': store.set('hideInstall', '1'); a.closest('.banner').remove(); break;
     case 'have-code': welcomeMode = 'code'; renderWelcome(); break;
     case 'retry': welcomeMode = null; renderWelcome(); break;

@@ -10,6 +10,6 @@ const header = `/**
  * @OnlyCurrentDoc  (the script can only open the Sheet it belongs to)
  */
 `;
-const out = header + '\n' + readFileSync('core/calendar.js', 'utf8') + '\n' + readFileSync('apps-script/gas.js', 'utf8');
+const out = header + '\n' + readFileSync('core/calendar.js', 'utf8') + '\n' + readFileSync('core/push.js', 'utf8') + '\n' + readFileSync('apps-script/gas.js', 'utf8');
 writeFileSync('apps-script/Code.gs', out);
 console.log(`apps-script/Code.gs written (${out.length} bytes)`);

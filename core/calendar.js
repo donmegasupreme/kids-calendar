@@ -82,6 +82,15 @@ function coreNewCode(db, randomInt) {
 
 function coreRecord(db, actor, summary, now) {
   db.activity.push({ ts: now.iso, person_id: actor.id, summary: summary });
+  // Phone notifications: one per change, to every device of everyone else.
+  // They share one tag, so a burst of changes replaces rather than stacks.
+  if (!db.pendingPush) db.pendingPush = [];
+  (db.push || []).forEach(function (d) {
+    if (d.person_id !== actor.id) {
+      db.pendingPush.push({ device: d, payload: { title: db.settings.family_name || 'Kids calendar',
+        body: actor.name + ': ' + summary, url: db.settings.app_url || '' } });
+    }
+  });
   if (db.activity.length > CORE_ACTIVITY_KEEP) db.activity.splice(0, db.activity.length - CORE_ACTIVITY_KEEP);
   db.people.forEach(function (p) {
     if (p.id !== actor.id && p.notify && p.email) {
@@ -160,6 +169,7 @@ function coreState(db, me) {
     events: db.events.slice().sort(function (a, b) {
       return byDate(a, b) || (a.start_time || '').localeCompare(b.start_time || '');
     }),
+    pushKey: db.settings.vapid_public || null,
     activity: db.activity.slice(-100).reverse().map(function (a) {
       var p = coreFind(db.people, a.person_id);
       return { ts: a.ts, summary: a.summary, person: p ? p.name : null };
@@ -175,7 +185,7 @@ function coreHandle(db, req, now, randomInt) {
   var action = req.action;
   var setUp = !!db.settings.family_name;
 
-  if (action === 'status') return { setUp: setUp, needsSetupKey: true };
+  if (action === 'status') return { setUp: setUp, needsSetupKey: true, pushKey: db.settings.vapid_public || null };
 
   if (action === 'setup') {
     if (setUp) throw new CoreError(409, 'This calendar is already set up. Ask for your code.');
@@ -330,6 +340,35 @@ function coreHandle(db, req, now, randomInt) {
       return coreState(db, me);
     }
 
+    // ---- phone notifications (Web Push) ----
+    // Subscriptions belong to a person; each phone has its own. No activity entry.
+    case 'pushSubscribe': {
+      var sub = req.subscription || {};
+      var keys = sub.keys || {};
+      if (!corePushEndpointOk(sub.endpoint)) throw coreBad("This phone's notification address isn't one we recognise");
+      if (!/^[A-Za-z0-9_-]{80,100}$/.test(String(keys.p256dh || '')) || !/^[A-Za-z0-9_-]{16,32}$/.test(String(keys.auth || ''))) {
+        throw coreBad("This phone's notification keys don't look right");
+      }
+      if (!db.push) db.push = [];
+      db.push = db.push.filter(function (d) { return d.endpoint !== sub.endpoint; });
+      db.push.push({ id: coreNextId(db), person_id: me.id, endpoint: sub.endpoint, p256dh: keys.p256dh, auth: keys.auth,
+        device: coreStr(typeof req.device === 'string' ? req.device.slice(0, 80) : '', 80, 'Device', false), created_at: now.iso });
+      return coreState(db, me);
+    }
+    case 'pushUnsubscribe': {
+      db.push = (db.push || []).filter(function (d) { return d.endpoint !== req.endpoint; });
+      return coreState(db, me);
+    }
+    case 'pushTest': {
+      // (No data changes, but keep db.dirty as is: newly made signing keys must still be saved.)
+      var dev = null;
+      (db.push || []).forEach(function (d) { if (d.endpoint === req.endpoint && d.person_id === me.id) dev = d; });
+      if (!dev) throw new CoreError(404, 'Notifications are not turned on for this phone');
+      db.pendingPush = [{ device: dev, test: true, payload: { title: db.settings.family_name || 'Kids calendar',
+        body: 'Test notification: they work on this phone.', url: db.settings.app_url || '' } }];
+      return { pushTest: true };
+    }
+
     case 'family': {
       name = coreStr(req.name, 60, 'Calendar name', true);
       db.settings.family_name = name;
@@ -340,6 +379,16 @@ function coreHandle(db, req, now, randomInt) {
 
   db.dirty = false;
   throw new CoreError(404, 'Unknown request');
+}
+
+// Only send to the browsers' real push services, never to any other address.
+function corePushEndpointOk(url) {
+  if (typeof url !== 'string' || url.length > 1000) return false;
+  var m = /^https:\/\/([a-z0-9.-]+)(\/|$)/i.exec(url);
+  if (!m) return false;
+  var host = m[1].toLowerCase();
+  return host === 'fcm.googleapis.com' || host === 'web.push.apple.com' || /\.push\.apple\.com$/.test(host) ||
+    host === 'updates.push.services.mozilla.com' || /\.notify\.windows\.com$/.test(host);
 }
 
 // ---- change emails ---------------------------------------------------------

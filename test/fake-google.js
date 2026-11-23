@@ -43,12 +43,13 @@ export class FakeSpreadsheet {
   }
 }
 
-export function loadGas({ ss = new FakeSpreadsheet(), file = new URL('../apps-script/Code.gs', import.meta.url), mailer, log = () => {} } = {}) {
+export function loadGas({ ss = new FakeSpreadsheet(), file = new URL('../apps-script/Code.gs', import.meta.url), mailer, pushStatus = () => 201, log = () => {} } = {}) {
   const sent = [];
+  const fetched = [];
   const triggers = [];
   const ctx = {
     console: { log, error: log, warn: log },
-    JSON, Math, Date, Number, String, Array, Object, parseInt, isNaN, Error,
+    JSON, Math, Date, Number, String, Array, Object, parseInt, isNaN, Error, BigInt, Uint8Array,
     SpreadsheetApp: { getActiveSpreadsheet: () => ss },
     LockService: { getScriptLock: () => ({ waitLock() {}, tryLock: () => true, releaseLock() {} }) },
     MailApp: { sendEmail: (m) => { if (mailer) mailer(m); sent.push(m); } },
@@ -57,6 +58,13 @@ export function loadGas({ ss = new FakeSpreadsheet(), file = new URL('../apps-sc
       createTextOutput: (s) => ({ content: s, setMimeType() { return this; }, getContent() { return this.content; } }),
     },
     Utilities: { getUuid: () => randomUUID() },
+    UrlFetchApp: {
+      fetchAll: (reqs) => reqs.map((r) => {
+        fetched.push(r);
+        const code = pushStatus(r);
+        return { getResponseCode: () => code, getContentText: () => (code >= 300 ? 'push service said no' : '') };
+      }),
+    },
     ScriptApp: {
       getProjectTriggers: () => triggers.map((h) => ({ getHandlerFunction: () => h })),
       newTrigger: (h) => ({ timeBased: () => ({ everyMinutes: () => ({ create: () => triggers.push(h) }) }) }),
@@ -66,5 +74,5 @@ export function loadGas({ ss = new FakeSpreadsheet(), file = new URL('../apps-sc
   vm.createContext(ctx);
   vm.runInContext(readFileSync(file, 'utf8'), ctx, { filename: 'Code.gs' });
   const post = (body) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).getContent());
-  return { ctx, ss, sent, triggers, post };
+  return { ctx, ss, sent, fetched, triggers, post };
 }

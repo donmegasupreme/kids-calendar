@@ -20,6 +20,8 @@ var TABLES = {
   },
   Activity: { key: 'activity', cols: ['ts', 'person_id', 'summary'], num: ['person_id'] },
   EmailQueue: { key: 'queue', cols: ['id', 'recipient_id', 'actor_id', 'summary', 'ts'], num: ['id', 'recipient_id', 'actor_id', 'ts'] },
+  // Phones with notifications turned on (one row per phone).
+  PushDevices: { key: 'push', cols: ['id', 'person_id', 'endpoint', 'p256dh', 'auth', 'device', 'created_at'], num: ['id', 'person_id'] },
 };
 var SETTINGS_JSON = ['pattern_cycle'];
 var SETTINGS_NUM = ['next_id'];
@@ -66,11 +68,13 @@ function doPost(e) {
   } catch (err) {
     return json_({ error: 'The calendar is busy. Try again in a moment.', status: 503 });
   }
+  var out, pending = [], db;
   try {
-    var db = loadDb_(ss);
-    var out = coreHandle(db, req, nowInfo_(), randomInt_);
+    db = loadDb_(ss);
+    ensurePushKeys_(db);
+    out = coreHandle(db, req, nowInfo_(), randomInt_);
+    pending = db.pendingPush || [];
     if (db.dirty) saveDb_(ss, db, false);
-    return json_(out);
   } catch (err) {
     if (err instanceof CoreError) return json_({ error: err.message, status: err.status });
     console.error(err && err.stack ? err.stack : err);
@@ -78,6 +82,24 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+
+  // Phone notifications go out after the change is saved and the lock is free.
+  // A failed notification never fails the save.
+  if (pending.length) {
+    var results = [];
+    try {
+      results = sendPushes_(db.settings, pending);
+      removeDeadDevices_(ss, results);
+    } catch (err) {
+      console.error('Notifications not sent: ' + (err && err.stack ? err.stack : err));
+      results = [{ status: 0, reason: String(err && err.message ? err.message : err) }];
+    }
+    if (out && out.pushTest) {
+      var r = results[0] || { status: 0, reason: 'not sent' };
+      out = { pushTest: { ok: r.status >= 200 && r.status < 300, status: r.status, reason: r.reason } };
+    }
+  }
+  return json_(out);
 }
 
 // Runs every 5 minutes (set up by install()).
@@ -93,6 +115,79 @@ function sendChangeEmails() {
     });
     if (db.dirty) saveDb_(ss, db, false);
     if (result.failed.length) console.error('Emails not sent (will retry): ' + result.failed.join('; '));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ---- phone notifications (Web Push) ---------------------------------------
+// The signing keys are made once and kept in the Settings tab. The private
+// half never leaves the Sheet; the app only ever sees vapid_public.
+function ensurePushKeys_(db) {
+  if (db.settings.vapid_public && db.settings.vapid_private) return;
+  try {
+    var k = pushGenerateKeys(randomBytes_);
+    db.settings.vapid_private = k.privateKey;
+    db.settings.vapid_public = k.publicKey;
+    db.dirty = true;
+  } catch (err) {
+    console.error('Could not make notification keys: ' + (err && err.stack ? err.stack : err));
+  }
+}
+
+// Sends each pending notification. Returns [{ endpoint, status, reason }].
+function sendPushes_(settings, pending) {
+  if (!settings.vapid_private || !settings.vapid_public) return [];
+  var subject = /^https:\/\//.test(settings.app_url || '') ? settings.app_url : 'mailto:kids-calendar@example.invalid';
+  var nowSec = Math.floor(Date.now() / 1000);
+  var tokens = {};
+  // Build each request on its own, so one bad phone can't stop the others.
+  var built = [];
+  pending.forEach(function (p) {
+    try {
+      var origin = /^https:\/\/[^\/]+/.exec(p.device.endpoint)[0];
+      if (!tokens[origin]) tokens[origin] = pushVapidAuthorization(p.device.endpoint, subject, settings.vapid_private, settings.vapid_public, nowSec);
+      var payload = { title: String(p.payload.title).slice(0, 80), body: String(p.payload.body).slice(0, 400), url: p.payload.url };
+      var body = pushEncrypt(p.device.p256dh, p.device.auth, pushUtf8(JSON.stringify(payload)), randomBytes_);
+      built.push({ p: p, req: {
+        url: p.device.endpoint,
+        method: 'post',
+        contentType: 'application/octet-stream',
+        payload: body.map(function (b) { return b > 127 ? b - 256 : b; }), // Apps Script wants signed bytes
+        headers: { Authorization: tokens[origin], 'Content-Encoding': 'aes128gcm', TTL: '86400', Urgency: 'normal', Topic: 'kidscalendar' },
+        muteHttpExceptions: true,
+        followRedirects: false,
+      } });
+    } catch (err) {
+      console.error('Notification not built for ' + String(p.device.endpoint).slice(0, 60) + '…: ' + (err && err.message ? err.message : err));
+      built.push({ p: p, error: String(err && err.message ? err.message : err) });
+    }
+  });
+  var toSend = built.filter(function (b) { return b.req; });
+  var responses = toSend.length ? UrlFetchApp.fetchAll(toSend.map(function (b) { return b.req; })) : [];
+  var k = 0;
+  return built.map(function (b) {
+    if (!b.req) return { endpoint: b.p.device.endpoint, status: 0, reason: 'Could not prepare: ' + b.error };
+    var res = responses[k++];
+    var code = res.getResponseCode();
+    var text = '';
+    try { text = String(res.getContentText() || '').slice(0, 300); } catch (e) { text = ''; }
+    if (code >= 300) console.error('Notification to ' + b.p.device.endpoint.slice(0, 60) + '… failed: ' + code + ' ' + text);
+    return { endpoint: b.p.device.endpoint, status: code, reason: code >= 300 ? text : '' };
+  });
+}
+
+// A 404 or 410 means the phone turned notifications off or the app was removed.
+function removeDeadDevices_(ss, results) {
+  var dead = results.filter(function (r) { return r.status === 404 || r.status === 410; }).map(function (r) { return r.endpoint; });
+  if (!dead.length) return;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  try {
+    var db = loadDb_(ss);
+    var before = db.push.length;
+    db.push = db.push.filter(function (d) { return dead.indexOf(d.endpoint) < 0; });
+    if (db.push.length !== before) saveDb_(ss, db, false);
   } finally {
     lock.releaseLock();
   }
@@ -198,6 +293,14 @@ function randomInt_(n) {
     for (var i = 0; i + 4 <= hex.length; i += 4) if (i !== 12 && i !== 16) randomPool_.push(parseInt(hex.slice(i, i + 4), 16));
   }
   return randomPool_.pop() % n;
+}
+function randomBytes_(n) {
+  var out = [];
+  while (out.length < n) {
+    var v = randomInt_(65536);
+    out.push(v >> 8, v & 255);
+  }
+  return out.slice(0, n);
 }
 function randomCode_(len) {
   var s = '';

@@ -25,8 +25,9 @@ anyone with a code can open on their phone and add to their Home Screen.
    - **Review permissions**, then pick your Google account.
    - You'll see **"Google hasn't verified this app"**. That's normal: it's your own script, not a
      published app. Click **Advanced**, then **Go to Kids Calendar (unsafe)**.
-   - It asks for three things: to use **this one spreadsheet**, to **send email as you**, and to
-     **run when you're not there** (to send the change emails). Click **Allow**.
+   - It asks for four things: to use **this one spreadsheet**, to **send email as you**, to
+     **connect to an external service** (to send phone notifications), and to **run when you're
+     not there** (to send the change emails). Click **Allow**.
 8. The log at the bottom says `Installed. Setup key: XXXXXXXXXX`. Your Sheet now has a **Settings**
    tab with the same `setup_key`. You'll need it once, in Part 3.
 9. Click **Deploy → New deployment**. Click the gear next to "Select type" and choose **Web app**.
@@ -65,9 +66,17 @@ anyone with a code can open on their phone and add to their Home Screen.
 
 ## Later
 
-**Updating the Google script** (if a new `Code.gs` comes out): paste it in as in steps 3 to 5, then
-**Deploy → Manage deployments → pencil → Version: New version → Deploy**. That keeps the same
-address. Don't use "New deployment": that makes a new address and you'd have to redo step 11.
+**Updating the Google script** (if a new `Code.gs` comes out):
+1. Back up first: in the Sheet, **File → Make a copy**.
+2. In Apps Script, select everything in `Code.gs`, delete it, paste the new one, and **save**.
+3. Pick **`install`** in the function box and click **Run**. If Google asks for a new permission,
+   approve it as in step 7. (Nothing is lost: install never clears the calendar.)
+4. **Deploy → Manage deployments → pencil → Version: New version → Deploy**. That keeps the same
+   address. Don't use "New deployment": that makes a new address and you'd have to redo step 11.
+
+**Phone notifications:** in the app, **Settings → Notifications on this phone → Turn on**, then
+**Allow**. On an iPhone this only works in the app opened from the Home Screen (iOS 16.4 or newer).
+Use **Send a test notification** to check. Emails carry on separately (Settings → You).
 
 **Backups:** in the Sheet, **File → Make a copy** now and then.
 

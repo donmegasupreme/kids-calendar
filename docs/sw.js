@@ -1,7 +1,7 @@
 // Offline shell. The app itself always tries the network first, so updates
 // show up straight away; the cache is only used when there's no connection.
 // Calendar data is never cached here (the page keeps its own last copy).
-const CACHE = 'kids-cal-v2';
+const CACHE = 'kids-cal-v3';
 // Relative paths: the site lives under /<repo-name>/ on GitHub Pages.
 const SHELL = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
@@ -24,4 +24,29 @@ self.addEventListener('fetch', (e) => {
       })
       .catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
   );
+});
+
+// ---- phone notifications ----
+// The message is encrypted by the Google script and decrypted by the browser.
+// Always show something, even if the message can't be read.
+self.addEventListener('push', (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch { data = {}; }
+  const title = data.title || 'Kids Calendar';
+  e.waitUntil(self.registration.showNotification(title, {
+    body: data.body || 'Something changed on the calendar.',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    tag: 'kids-calendar',   // a new change replaces the last one instead of stacking up
+    renotify: true,
+    data: { url: data.url || self.registration.scope },
+  }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || self.registration.scope;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    for (const c of list) if (c.url.startsWith(self.registration.scope) && 'focus' in c) return c.focus();
+    return self.clients.openWindow(url);
+  }));
 });
