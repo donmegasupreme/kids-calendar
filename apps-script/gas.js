@@ -15,7 +15,7 @@ var TABLES = {
   Events: {
     key: 'events',
     cols: ['id', 'date', 'start_time', 'end_time', 'title', 'kid_ids', 'location', 'notes', 'responsible_id',
-      'created_by', 'updated_by', 'created_at', 'updated_at'],
+      'created_by', 'updated_by', 'created_at', 'updated_at', 'end_date'], // new columns go on the end
     num: ['id', 'responsible_id', 'created_by', 'updated_by'], json: ['kid_ids'],
   },
   Activity: { key: 'activity', cols: ['ts', 'person_id', 'summary'], num: ['person_id'] },

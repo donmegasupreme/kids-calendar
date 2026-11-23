@@ -79,7 +79,12 @@ function whoHas(date) {
   const o = overrideMap.get(date);
   return o ? o.person_id : scheduled(date);
 }
-const eventsOn = (date) => S.events.filter((e) => e.date === date);
+// Events on a day, including ones that run over several days.
+const lastDay = (e) => e.end_date || e.date;
+const isMulti = (e) => !!e.end_date && e.end_date !== e.date;
+const eventsOn = (date) => S.events.filter((e) => e.date <= date && date <= lastDay(e));
+const byTime = (a, b) => (isMulti(b) - isMulti(a)) || (a.start_time || '').localeCompare(b.start_time || '');
+const multiDayOk = () => (S.apiVersion || 1) >= 2; // older Google script: single-day only
 
 /* ---------- server (Google Apps Script) ---------- */
 // The address of the calendar's Google script is set in config.js.
@@ -229,9 +234,14 @@ function renderCal() {
       ${overrideMap.has(d) ? '<i class="ov" title="Changed from usual"></i>' : ''}
       ${who && prevWho && prevWho !== who.id ? '<span class="swap" aria-hidden="true">⇄</span>' : ''}
       <span class="num">${Number(d.slice(8))}</span>
-      <span class="dots">${evs.slice(0, 4).map((e) => {
+      <span class="dots">${evs.filter((e) => !isMulti(e)).slice(0, 4).map((e) => {
         const k = kid(e.kid_ids[0]);
         return `<i class="dot" style="${k ? `background:${k.color}` : ''}"></i>`;
+      }).join('')}</span>
+      <span class="bars">${evs.filter(isMulti).slice(0, 2).map((e) => {
+        const k = kid(e.kid_ids[0]);
+        const cls = ['bar', (e.date === d || dow(d) === 0) && 's', (lastDay(e) === d || dow(d) === 6) && 'e'].filter(Boolean).join(' ');
+        return `<i class="${cls}" style="--c:${k ? k.color : 'var(--accent)'}"></i>`;
       }).join('')}</span>
     </button>`;
   }
@@ -246,6 +256,7 @@ function renderCal() {
     <div class="row">${legend()}<span class="grow"></span>
       ${ui.month !== today.slice(0, 7) ? '<button class="ghost today-btn" data-act="today">Back to today</button>' : ''}</div>
     <div class="grid" id="grid">${cells}</div>
+    ${multiDayOk() ? `<p class="small muted hint">Tip: press and hold a day, then drag across, to pick several days.</p>` : ''}
     ${noPattern ? `<div class="banner" style="margin-top:12px"><div class="grow"><b>Set up the usual schedule</b><br>
       Tell the calendar how the kids normally go between you (week about, 2-2-3, weekends…).</div></div>
       <button class="primary block" data-act="pattern">Set usual schedule</button>` : ''}
@@ -255,7 +266,7 @@ function renderCal() {
 function dayPanel(d) {
   const who = person(whoHas(d));
   const o = overrideMap.get(d);
-  const evs = eventsOn(d).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+  const evs = eventsOn(d).sort(byTime);
   return `<div class="card">
     <h2>${longDate(d)}</h2>
     <div class="who-line" ${who ? `style="--who:${who.color}"` : ''}>
@@ -264,20 +275,29 @@ function dayPanel(d) {
         : '<b>No one set</b><span class="small muted">Not on the usual schedule</span>'}</div>
       <button data-act="custody" data-date="${d}">Change</button>
     </div>
-    ${evs.length ? evs.map(eventRow).join('') : '<p class="muted small" style="margin:6px 0 2px">Nothing on this day.</p>'}
+    ${evs.length ? evs.map((e) => eventRow(e, d)).join('') : '<p class="muted small" style="margin:6px 0 2px">Nothing on this day.</p>'}
     <div class="spacer"></div>
     <button class="block" data-act="add-event" data-date="${d}">+ Add event</button>
   </div>`;
 }
 
-function eventRow(e) {
+function eventRow(e, day) {
   const resp = person(e.responsible_id);
   const kids = e.kid_ids.map(kid).filter(Boolean);
-  const time = e.start_time ? `${timeStr(e.start_time)}${e.end_time ? `<br>${timeStr(e.end_time)}` : ''}` : 'All day';
+  let time;
+  if (isMulti(e)) {
+    // Over several days: start time on the first day, end time on the last.
+    time = day === e.date ? (e.start_time ? `From<br>${timeStr(e.start_time)}` : 'Starts')
+      : day === lastDay(e) ? (e.end_time ? `Until<br>${timeStr(e.end_time)}` : 'Last day')
+      : 'All day';
+  } else {
+    time = e.start_time ? `${timeStr(e.start_time)}${e.end_time ? `<br>${timeStr(e.end_time)}` : ''}` : 'All day';
+  }
   return `<button class="event" data-act="edit-event" data-id="${e.id}">
     <div class="time">${time}</div>
     <div class="grow">
       <div class="title">${esc(e.title)}</div>
+      ${isMulti(e) ? `<div class="meta">${shortDate(e.date)} – ${shortDate(lastDay(e))} (${diffDays(e.date, lastDay(e)) + 1} days)</div>` : ''}
       ${e.location ? `<div class="meta">${esc(e.location)}</div>` : ''}
       ${resp ? `<div class="meta">${esc(resp.name)} taking them</div>` : ''}
       ${kids.length ? `<div>${kids.map((k) => `<span class="chip"><i class="swatch" style="background:${k.color};width:8px;height:8px"></i>${esc(k.name)}</span>`).join('')}</div>` : ''}
@@ -295,12 +315,13 @@ function renderUpcoming() {
     const who = whoHas(d);
     const handover = who && who !== prev ? person(who) : null;
     prev = who;
-    const evs = eventsOn(d).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+    // A multi-day event is listed on its first day, and under Today while it's on.
+    const evs = eventsOn(d).filter((e) => e.date === d || i === 0).sort(byTime);
     if (!handover && !evs.length) continue;
     any = true;
     html += `<div class="date-head">${i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : shortDate(d)}</div><div class="card" style="padding:10px 14px">
       ${handover ? `<div class="handover" style="--who:${handover.color}"><i class="swatch" style="background:${handover.color}"></i>Kids go to <b>${esc(handover.name)}</b></div>` : ''}
-      ${evs.map(eventRow).join('')}</div>`;
+      ${evs.map((e) => eventRow(e, d)).join('')}</div>`;
   }
   if (!any) html += '<div class="empty">Nothing in the next 90 days.<br>Add events with the + button on the calendar.</div>';
   return html;
@@ -469,21 +490,28 @@ function closeSheet() { if ($sheet.open) $sheet.close(); }
 $sheet.addEventListener('click', (e) => { if (e.target === $sheet) closeSheet(); });
 $sheet.addEventListener('close', () => render());
 
-function eventSheet(ev, date) {
-  const e = ev || { date: date || ui.sel || todayStr(), kid_ids: S.kids.length === 1 ? [S.kids[0].id] : [] };
+function eventSheet(ev, date, endDate) {
+  const e = ev || { date: date || ui.sel || todayStr(), end_date: endDate && endDate !== date ? endDate : '',
+    kid_ids: S.kids.length === 1 ? [S.kids[0].id] : [] };
+  const multi = multiDayOk();
   const kidsHtml = S.kids.length ? `<label>Which kids</label><div class="pick" data-pick="multi" data-name="kid_ids">
     ${S.kids.map((k) => `<button type="button" data-val="${k.id}" aria-pressed="${e.kid_ids.includes(k.id)}">
       <i class="swatch" style="background:${k.color}"></i>${esc(k.name)}</button>`).join('')}</div>` : '';
   openSheet(ev ? 'Edit event' : 'New event', `
     <label for="ev-title">What</label>
     <input id="ev-title" name="title" value="${esc(e.title || '')}" placeholder="Netball, school play, dentist…" required maxlength="120">
+    ${multi ? `<div class="two">
+      <div><label for="ev-date">First day</label><input id="ev-date" name="date" type="date" value="${e.date}" required></div>
+      <div><label for="ev-end">Last day</label><input id="ev-end" name="end_date" type="date" value="${e.end_date || ''}" min="${e.date}"></div>
+    </div>
+    <p class="small muted" style="margin-top:6px">Leave the last day blank for a one-day event.</p>` : `
     <label for="ev-date">Date</label>
-    <input id="ev-date" name="date" type="date" value="${e.date}" required>
+    <input id="ev-date" name="date" type="date" value="${e.date}" required>`}
     <div class="two">
       <div><label for="ev-st">Starts</label><input id="ev-st" name="start_time" type="time" value="${e.start_time || ''}"></div>
       <div><label for="ev-et">Ends</label><input id="ev-et" name="end_time" type="time" value="${e.end_time || ''}"></div>
     </div>
-    <p class="small muted" style="margin-top:6px">Leave the times blank for an all-day event.</p>
+    <p class="small muted" style="margin-top:6px">Leave the times blank for an all-day event.${multi ? ' Over several days, the start time is on the first day and the end time on the last.' : ''}</p>
     ${kidsHtml}
     <label for="ev-who">Who's taking them</label>
     <select id="ev-who" name="responsible_id"><option value="">Not decided</option>
@@ -499,19 +527,33 @@ function eventSheet(ev, date) {
     const body = Object.fromEntries(fd);
     body.kid_ids = picked(form, 'kid_ids').map(Number);
     if (!body.title.trim()) return toast('Give the event a name', true);
+    if (body.end_date && body.end_date < body.date) return toast('The last day is before the first day', true);
+    if (body.end_date === body.date) body.end_date = '';
     if (ev) body.id = ev.id;
     save(ev ? 'updateEvent' : 'addEvent', body, ev ? 'Saved' : 'Event added')
       .then((ok) => { if (ok) { ui.sel = body.date; ui.month = body.date.slice(0, 7); render(); } });
   });
 }
 
-function custodySheet(date) {
+// After picking several days on the calendar (press, hold and drag).
+function rangeSheet(from, to) {
+  const n = diffDays(from, to) + 1;
+  const label = n === 1 ? longDate(from) : `${shortDate(from)} – ${shortDate(to)}`;
+  openSheet(esc(label), `
+    <p class="muted">${n === 1 ? 'What do you want to do on this day?' : `${n} days picked. What do you want to do?`}</p>
+    <div class="spacer"></div>
+    <button type="button" class="primary block" data-act="range-event" data-from="${from}" data-to="${to}">+ Add an event${n > 1 ? ' over these days' : ''}</button>
+    <div class="spacer"></div>
+    <button type="button" class="block" data-act="range-custody" data-from="${from}" data-to="${to}">Change who has the kids</button>`, () => {});
+}
+
+function custodySheet(date, toDate) {
   const cur = whoHas(date);
   const o = overrideMap.get(date);
   openSheet('Who has the kids', `
     <div class="two">
       <div><label for="c-from">From</label><input id="c-from" name="from" type="date" value="${date}" required></div>
-      <div><label for="c-to">To (inclusive)</label><input id="c-to" name="to" type="date" value="${date}" required></div>
+      <div><label for="c-to">To (inclusive)</label><input id="c-to" name="to" type="date" value="${toDate || date}" required></div>
     </div>
     <label>With</label>
     <div class="pick" data-pick="one" data-name="person_id">
@@ -763,6 +805,7 @@ document.addEventListener('click', async (e) => {
   if (tab) { ui.view = tab.dataset.view; render(); scrollTo(0, 0); return; }
 
   const day = e.target.closest('[data-day]');
+  if (day && drag.justDid) return; // the tap that ended a drag isn't a day tap
   if (day) {
     ui.sel = day.dataset.day;
     if (ui.sel.slice(0, 7) !== ui.month) ui.month = ui.sel.slice(0, 7);
@@ -790,6 +833,8 @@ document.addEventListener('click', async (e) => {
       if (confirmTwice(a, 'Tap again to delete')) save('deleteEvent', { id }, 'Deleted');
       break;
     case 'custody': custodySheet(a.dataset.date); break;
+    case 'range-event': eventSheet(null, a.dataset.from, a.dataset.to); break;
+    case 'range-custody': custodySheet(a.dataset.from, a.dataset.to); break;
     case 'pattern': patternSheet(); break;
     case 'clear-pattern':
       if (confirmTwice(a, 'Tap again to clear')) save('pattern', { start: null, cycle: [] }, 'Schedule cleared');
@@ -885,6 +930,83 @@ document.addEventListener('submit', async (e) => {
   }
 });
 
+/* ---------- pick several days: press, hold and drag ---------- */
+// Phone: hold a day for half a second (it highlights), then drag across days.
+// Until the hold kicks in, a finger move is a normal scroll or month swipe.
+// Mouse: press on a day and drag. Letting go opens rangeSheet().
+// Day buttons are restyled in place during a drag, never re-rendered, so the
+// touch keeps its target.
+const drag = { start: null, end: null, active: false, timer: null, x: 0, y: 0, mouse: false, justDid: false };
+function dayAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  const b = el && el.closest('#grid [data-day]');
+  return b ? b.dataset.day : null;
+}
+function dragRange() { return drag.start <= drag.end ? [drag.start, drag.end] : [drag.end, drag.start]; }
+function paintDrag() {
+  const [a, b] = drag.active ? dragRange() : ['', ''];
+  document.querySelectorAll('#grid [data-day]').forEach((el) => {
+    el.classList.toggle('range', drag.active && el.dataset.day >= a && el.dataset.day <= b);
+  });
+}
+function beginDrag(day) {
+  if (!multiDayOk() || $sheet.open) return;
+  drag.active = true;
+  drag.start = drag.end = day;
+  paintDrag();
+  if (navigator.vibrate) navigator.vibrate(15);
+}
+function moveDrag(x, y) {
+  const d = dayAt(x, y);
+  if (d && d !== drag.end) { drag.end = d; paintDrag(); }
+}
+function endDrag() {
+  clearTimeout(drag.timer);
+  drag.mouse = false;
+  if (!drag.active) return;
+  const [a, b] = dragRange();
+  drag.active = false;
+  drag.justDid = true;
+  setTimeout(() => { drag.justDid = false; }, 500);
+  paintDrag();
+  rangeSheet(a, b);
+}
+function cancelDrag() { clearTimeout(drag.timer); drag.active = false; drag.mouse = false; paintDrag(); }
+
+document.addEventListener('touchstart', (e) => {
+  const b = e.target.closest('#grid [data-day]');
+  if (!b || e.touches.length > 1) return cancelDrag();
+  drag.x = e.touches[0].clientX; drag.y = e.touches[0].clientY;
+  clearTimeout(drag.timer);
+  drag.timer = setTimeout(() => beginDrag(b.dataset.day), 450);
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  const t = e.touches[0];
+  if (drag.active) {
+    e.preventDefault(); // stop the page scrolling while picking days
+    moveDrag(t.clientX, t.clientY);
+  } else if (Math.abs(t.clientX - drag.x) > 10 || Math.abs(t.clientY - drag.y) > 10) {
+    clearTimeout(drag.timer); // it's a scroll or a swipe, not a hold
+  }
+}, { passive: false });
+document.addEventListener('touchend', () => { clearTimeout(drag.timer); if (drag.active) endDrag(); });
+document.addEventListener('touchcancel', cancelDrag);
+document.addEventListener('contextmenu', (e) => { if (e.target.closest('#grid')) e.preventDefault(); });
+
+document.addEventListener('mousedown', (e) => {
+  const b = e.button === 0 && e.target.closest('#grid [data-day]');
+  if (!b || drag.active) return;
+  drag.mouse = true;
+  drag.start = drag.end = b.dataset.day;
+});
+document.addEventListener('mousemove', (e) => {
+  if (!drag.mouse) return;
+  const d = dayAt(e.clientX, e.clientY);
+  if (!drag.active && d && d !== drag.start) { const s0 = drag.start; beginDrag(s0); drag.start = s0; }
+  if (drag.active) moveDrag(e.clientX, e.clientY);
+});
+document.addEventListener('mouseup', () => { if (drag.mouse) endDrag(); });
+
 /* ---------- swipe months ---------- */
 let touchX = null, touchY = null;
 document.addEventListener('touchstart', (e) => {
@@ -893,6 +1015,7 @@ document.addEventListener('touchstart', (e) => {
 }, { passive: true });
 document.addEventListener('touchend', (e) => {
   if (touchX === null) return;
+  if (drag.active || drag.justDid) { touchX = null; return; } // picking days, not swiping
   const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
   touchX = null;
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {

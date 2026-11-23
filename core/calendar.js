@@ -122,8 +122,16 @@ function coreAddKid(db, name, color) {
   return kid;
 }
 
+// "Sat 28 Nov at 9:00am", or for a multi-day event "Fri 27 Nov to Sun 29 Nov".
+function coreEventWhen(e) {
+  if (e.end_date && e.end_date !== e.date) {
+    return corePrettyDate(e.date) + (e.start_time ? ' ' + corePrettyTime(e.start_time) : '') + ' to ' +
+      corePrettyDate(e.end_date) + (e.end_time ? ' ' + corePrettyTime(e.end_time) : '');
+  }
+  return corePrettyDate(e.date) + (e.start_time ? ' at ' + corePrettyTime(e.start_time) : '');
+}
 function coreEventSummary(e) {
-  return '"' + e.title + '" on ' + corePrettyDate(e.date) + (e.start_time ? ' at ' + corePrettyTime(e.start_time) : '');
+  return '"' + e.title + '" ' + (e.end_date && e.end_date !== e.date ? '' : 'on ') + coreEventWhen(e);
 }
 
 function coreReadEvent(db, body) {
@@ -133,7 +141,14 @@ function coreReadEvent(db, body) {
   if (start && !coreIsTime(start)) throw coreBad('Start time is not valid');
   if (end && !coreIsTime(end)) throw coreBad('End time is not valid');
   if (end && !start) throw coreBad('Add a start time as well as an end time');
-  if (start && end && end < start) throw coreBad('End time is before the start time');
+  // Optional last day for events over several days (camps, holidays, tournaments).
+  var endDate = body.end_date || '';
+  if (endDate && !coreIsDate(endDate)) throw coreBad('The last day is not a valid date');
+  if (endDate && endDate < body.date) throw coreBad('The last day is before the first day');
+  if (endDate === body.date) endDate = '';
+  if (endDate && coreDaysBetween(body.date, endDate) > 62) throw coreBad('An event can be up to two months long');
+  // On one day the end time must come after the start; over several days it's on the last day.
+  if (start && end && end < start && !endDate) throw coreBad('End time is before the start time');
   var kidIds = [];
   (Array.isArray(body.kid_ids) ? body.kid_ids : []).forEach(function (id) {
     id = Number(id);
@@ -142,7 +157,7 @@ function coreReadEvent(db, body) {
   var resp = body.responsible_id ? Number(body.responsible_id) : 0;
   if (resp && !coreFind(db.people, resp)) throw coreBad('Unknown person');
   return {
-    date: body.date, start_time: start, end_time: end,
+    date: body.date, end_date: endDate, start_time: start, end_time: end,
     title: coreStr(body.title, 120, 'Title', true),
     kid_ids: kidIds,
     location: coreStr(body.location, 200, 'Location', false),
@@ -170,6 +185,7 @@ function coreState(db, me) {
       return byDate(a, b) || (a.start_time || '').localeCompare(b.start_time || '');
     }),
     pushKey: db.settings.vapid_public || null,
+    apiVersion: 2, // 2 = events can span several days (end_date)
     activity: db.activity.slice(-100).reverse().map(function (a) {
       var p = coreFind(db.people, a.person_id);
       return { ts: a.ts, summary: a.summary, person: p ? p.name : null };
@@ -286,12 +302,13 @@ function coreHandle(db, req, now, randomInt) {
         return coreState(db, me);
       }
       e = coreReadEvent(db, req);
-      var moved = old.date !== e.date || old.start_time !== e.start_time;
-      var was = corePrettyDate(old.date) + (old.start_time ? ' ' + corePrettyTime(old.start_time) : '');
+      var moved = old.date !== e.date || old.start_time !== e.start_time || (old.end_date || '') !== e.end_date;
+      var was = (old.end_date && old.end_date !== old.date) ? coreEventWhen(old)
+        : corePrettyDate(old.date) + (old.start_time ? ' ' + corePrettyTime(old.start_time) : '');
       for (var k in e) old[k] = e[k];
       old.updated_by = me.id; old.updated_at = now.iso;
       coreRecord(db, me, moved
-        ? 'Moved "' + e.title + '" from ' + was + ' to ' + corePrettyDate(e.date) + (e.start_time ? ' at ' + corePrettyTime(e.start_time) : '')
+        ? 'Moved "' + e.title + '" from ' + was + ' to ' + coreEventWhen(e)
         : 'Updated ' + coreEventSummary(e), now);
       return coreState(db, me);
     }

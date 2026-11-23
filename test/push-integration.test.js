@@ -65,7 +65,9 @@ test('upgrade: a Sheet written by the version Don runs now loses nothing', () =>
   const v2 = loadGas({ ss });
   v2.ctx.install(); // Don runs install again to approve the new permission
   const after = v2.post({ action: 'state', code });
-  for (const k of ['family', 'people', 'kids', 'overrides', 'events', 'activity']) assert.deepEqual(after[k], before[k], k);
+  const noEnd = (evs) => evs.map(({ end_date, ...e }) => e); // newer versions add an empty end_date
+  for (const k of ['family', 'people', 'kids', 'overrides', 'activity']) assert.deepEqual(after[k], before[k], k);
+  assert.deepEqual(noEnd(after.events), noEnd(before.events));
   assert.match(after.pushKey, /^[A-Za-z0-9_-]{87}$/);
 
   // The old web-app version (still live until Don publishes) keeps working on the new Sheet,
@@ -159,4 +161,27 @@ test('email still works alongside, and the email toggle is separate', () => {
   g.ctx.sendChangeEmails();
   assert.equal(g.sent.length, 1);
   assert.equal(g.sent[0].to, 's@example.com');
+});
+
+test('upgrade from the notifications version (what Don runs now): data, keys and phones kept', () => {
+  const ss = new FakeSpreadsheet();
+  const v2 = loadGas({ ss, file: new URL('./fixtures/code-v2.gs', import.meta.url) });
+  const key = v2.ctx.install();
+  const { code, otherCode } = v2.post({ action: 'setup', setupKey: key, you: { name: 'Alex' }, other: { name: 'Sam' }, kids: ['Mia'] });
+  v2.post({ action: 'addEvent', code, title: 'Netball', date: '2026-11-28', start_time: '09:00' });
+  v2.post({ action: 'pushSubscribe', code: otherCode, subscription: makeSubscriber().sub });
+  const before = v2.post({ action: 'state', code });
+
+  const v3 = loadGas({ ss });
+  v3.ctx.install();
+  const after = v3.post({ action: 'state', code });
+  assert.equal(after.pushKey, before.pushKey, 'same notification key, so phones keep working');
+  assert.equal(ss.getSheetByName('PushDevices').data.length, 2);
+  assert.deepEqual(after.events.map(({ end_date, ...e }) => e), before.events);
+  // The new version's multi-day event, then the old web app (live until Don publishes) saving something.
+  v3.post({ action: 'addEvent', code, title: 'Camp', date: '2026-12-09', end_date: '2026-12-11' });
+  v2.post({ action: 'addKid', code, name: 'Leo' });
+  const later = loadGas({ ss }).post({ action: 'state', code });
+  assert.ok(later.kids.some((k) => k.name === 'Leo'));
+  assert.equal(later.events.find((e) => e.title === 'Camp').end_date, '2026-12-11', 'old version saving kids leaves events alone');
 });

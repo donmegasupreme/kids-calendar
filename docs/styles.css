@@ -138,6 +138,14 @@ input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: n
 .day.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
 .day .dots { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; max-width: 90%; }
 .day .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
+.day .bars { display: flex; flex-direction: column; gap: 2px; width: 100%; margin-top: auto; padding-bottom: 7px; }
+.day .bar { display: block; height: 5px; background: var(--c); margin: 0 -2px; }
+.day .bar.s { margin-left: 5px; border-radius: 3px 0 0 3px; }
+.day .bar.e { margin-right: 5px; border-radius: 0 3px 3px 0; }
+.day .bar.s.e { border-radius: 3px; }
+.day.range { outline: 3px solid var(--accent); outline-offset: -3px; background: color-mix(in srgb, var(--accent) 28%, var(--card)); }
+.grid { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.hint { text-align: center; margin: 8px 0 0; }
 .day .swap { position: absolute; top: 3px; right: 4px; font-size: 10px; color: var(--muted); }
 .day .ov { position: absolute; top: 3px; left: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--who); }
 

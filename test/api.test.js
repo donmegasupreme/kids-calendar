@@ -171,3 +171,25 @@ test('a brand-new Sheet without install refuses setup', () => {
   const fresh = loadGas({ ss: new FakeSpreadsheet() });
   assert.equal(fresh.post({ action: 'setup', setupKey: '', you: { name: 'X' } }).status, 403);
 });
+
+test('multi-day events: saved, described, validated, and stored in the Sheet', () => {
+  let r = post({ action: 'addEvent', code: A, title: 'School camp', date: '2026-12-09', end_date: '2026-12-11', start_time: '08:30', end_time: '15:00' });
+  const ev = r.events.find((e) => e.title === 'School camp');
+  assert.equal(ev.end_date, '2026-12-11');
+  assert.equal(r.activity[0].summary, 'Added "School camp" Wed 9 Dec 8:30am to Fri 11 Dec 3:00pm');
+  assert.equal(r.apiVersion, 2);
+  // End time earlier than start time is fine across days.
+  r = post({ action: 'addEvent', code: A, title: 'Sleepover', date: '2026-12-12', end_date: '2026-12-13', start_time: '17:00', end_time: '10:00' });
+  assert.ok(r.events.some((e) => e.title === 'Sleepover'));
+  // Same day as start = single-day event.
+  r = post({ action: 'addEvent', code: A, title: 'One day', date: '2026-12-14', end_date: '2026-12-14' });
+  assert.equal(r.events.find((e) => e.title === 'One day').end_date, '');
+  assert.equal(post({ action: 'addEvent', code: A, title: 'X', date: '2026-12-14', end_date: '2026-12-13' }).status, 400);
+  assert.equal(post({ action: 'addEvent', code: A, title: 'X', date: '2026-12-14', end_date: '2027-03-01' }).status, 400);
+  // Survives a reload from the Sheet.
+  const back = loadGas({ ss }).post({ action: 'state', code: A }).events.find((e) => e.id === ev.id);
+  assert.equal(back.end_date, '2026-12-11');
+  r = post({ ...ev, action: 'updateEvent', code: A, end_date: '2026-12-12' });
+  assert.equal(r.activity[0].summary, 'Moved "School camp" from Wed 9 Dec 8:30am to Fri 11 Dec 3:00pm to Wed 9 Dec 8:30am to Sat 12 Dec 3:00pm');
+  for (const t of ['School camp', 'Sleepover', 'One day']) post({ action: 'deleteEvent', code: A, id: post({ action: 'state', code: A }).events.find((e) => e.title === t).id });
+});
