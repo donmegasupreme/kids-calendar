@@ -1,7 +1,7 @@
 // Offline shell. The app itself always tries the network first, so updates
 // show up straight away; the cache is only used when there's no connection.
 // Calendar data is never cached here (the page keeps its own last copy).
-const CACHE = 'kids-cal-v3';
+const CACHE = 'kids-cal-v4';
 // Relative paths: the site lives under /<repo-name>/ on GitHub Pages.
 const SHELL = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 

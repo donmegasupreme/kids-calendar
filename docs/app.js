@@ -783,10 +783,19 @@ async function pushTest(btn) {
   try {
     const sub = await currentSubscription();
     if (!sub) return pushCard('Notifications are not turned on for this phone.');
-    const r = await api('pushTest', { endpoint: sub.endpoint });
+    let r;
+    try {
+      r = await api('pushTest', { endpoint: sub.endpoint });
+    } catch (e) {
+      // The phone has notifications on, but the calendar has lost track of it
+      // (e.g. removed after a failed send, or turned on before an update). Re-register and retry once.
+      if (e.status !== 404) throw e;
+      setState(await api('pushSubscribe', { subscription: sub.toJSON(), device: deviceName() }));
+      r = await api('pushTest', { endpoint: sub.endpoint });
+    }
     const t = r.pushTest || {};
     pushCard(t.ok ? 'Sent. It should appear within a few seconds (lock the phone to see it on the lock screen).'
-      : `Not delivered. The notification service said ${t.status || 'nothing'}${t.reason ? `: ${t.reason}` : ''}`);
+      : `Not delivered. The notification service said ${t.status || 'nothing'}${t.reason ? `: ${t.reason}` : ''}. Try "Turn off", then turn them on again.`);
   } catch (e) {
     pushCard(`Test failed: ${e.message || e}`);
   }
